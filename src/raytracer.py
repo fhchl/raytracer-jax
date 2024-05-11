@@ -1,7 +1,17 @@
 from PIL import Image
 import numpy as np
 from tqdm import tqdm
-from .geometry import Sphere, point, Scene, vector, Color, Ray, color, unit_vector
+from .geometry import (
+    Sphere,
+    point,
+    Scene,
+    vector,
+    Color,
+    Ray,
+    color,
+    unit_vector,
+    Interval,
+)
 import jax
 import jax.numpy as jnp
 from jaxtyping import Scalar
@@ -37,7 +47,7 @@ pixel00_loc = viewport_upper_left + 0.5 * (pixel_delta_u + pixel_delta_v)
 
 
 def ray_color(r: Ray) -> Color:
-    rec = scene.hit(r, 0.0, jnp.inf)
+    rec = scene.hit(r, Interval(0.0, jnp.inf))
 
     def hit():
         return 0.5 * (rec.normal + 1)
@@ -47,7 +57,8 @@ def ray_color(r: Ray) -> Color:
         a = 0.5 * (unit_direction[1] + 1)
         return (1 - a) * color(1.0, 1.0, 1.0) + a * color(0.5, 0.7, 1.0)
 
-    return jax.lax.cond(jnp.logical_and(0 < rec.t, rec.t < jnp.inf), hit, nohit)
+    is_hit = Interval(0., jnp.inf).contains(rec.t)
+    return jax.lax.cond(is_hit, hit, nohit)
 
 
 def compute_pixel(i: Scalar, j: Scalar) -> Color:
@@ -58,6 +69,7 @@ def compute_pixel(i: Scalar, j: Scalar) -> Color:
 
 
 jit = jax.jit(compute_pixel)
+
 
 def main() -> None:
     image = np.zeros((image_height, image_width, 3))

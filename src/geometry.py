@@ -7,6 +7,7 @@ import jax.tree_util as jtu
 from .util import tree_stack
 
 from beartype.claw import beartype_this_package
+from jaxtyping import ScalarLike
 
 beartype_this_package()
 
@@ -71,11 +72,27 @@ class HitRecord(eqx.Module):
         return HitRecord(self.p, normal, self.t, front_face)
 
 
+class Interval(eqx.Module):
+    min: float = jnp.inf
+    max: float = -jnp.inf
+
+    def size(self) -> float:
+        return self.max - self.min
+
+    def contains(self, x: ScalarLike) -> Bool:
+        x = jnp.asarray(x)
+        return (self.min < x) & (x < self.max)
+
+    def surrounds(self, x: ScalarLike) -> Bool:
+        x = jnp.asarray(x)
+        return (self.min <= x) & (x <= self.max)
+
+
 class Sphere(eqx.Module):
     center: Vector
     radius: float
 
-    def hit(self, r: Ray, ray_tmin: float, ray_tmax: float) -> HitRecord:
+    def hit(self, r: Ray, ray_t: Interval) -> HitRecord:
         # Compute closest point Q to sphere
         t = intersect_line_sphere(self.center, self.radius, r.origin, r.direction)
         def hit():
@@ -86,15 +103,19 @@ class Sphere(eqx.Module):
             return HitRecord(
                 point(0.0, 0.0, 0.0), vector(0.0, 0.0, 0.0), jnp.inf, False
             )
-        is_hit = jnp.logical_and(0 < t, t < jnp.inf)
+        is_hit = ray_t.contains(t)
         return jax.lax.cond(is_hit, hit, nohit)
 
 
 class Scene(eqx.Module):
     objects: list[Sphere]
 
-    def hit(self, r: Ray, ray_tmin: float, ray_tmax: float) -> HitRecord:
+    def hit(self, r: Ray, ray_t: Interval) -> HitRecord:
         stacked = tree_stack(self.objects)
-        hits = jax.vmap(lambda obj: obj.hit(r, ray_tmin, ray_tmax))(stacked)
+        hits = jax.vmap(lambda obj: obj.hit(r, ray_t))(stacked)
         idx = jnp.argmin(hits.t, axis=0)
         return jtu.tree_map(lambda n: n[idx], hits)
+
+
+        
+    
