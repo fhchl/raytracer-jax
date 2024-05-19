@@ -6,10 +6,8 @@ import jax.tree_util as jtu
 from tqdm import tqdm
 from .util import tree_stack
 import numpy as np
-from beartype.claw import beartype_this_package
 from jaxtyping import ScalarLike, Scalar
 
-beartype_this_package()
 
 Bool = Float = Color = Point = Vector = Array
 color = point = vector = lambda x, y, z: jnp.array((x, y, z))

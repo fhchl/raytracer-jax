@@ -4,7 +4,6 @@ import numpy as np
 
 
 def main():
-    # Scene
     scene = Scene(
         objects=[
             Sphere(point(0.0, -100.5, -1), 100.0),
@@ -18,6 +17,7 @@ def main():
         focal_length=1.
     )
     image = camera.render(scene)
+
     image = Image.fromarray(np.uint8(255 * image), mode="RGB")
     image.save("rendering.png")
     image.show()
