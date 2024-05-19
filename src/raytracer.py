@@ -1,15 +1,15 @@
-from jax import Array
-import jax.numpy as jnp
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jax.tree_util as jtu
-from tqdm import tqdm
-from .util import tree_stack
 import numpy as np
-from jaxtyping import ScalarLike, Scalar
+from jax import Array
+from jaxtyping import ScalarLike
+from tqdm import tqdm
 
+from .util import tree_stack
 
-Bool = Float = Color = Point = Vector = Array
+Bool = Float = Color = Point = Vector = KeyArray = Array
 color = point = vector = lambda x, y, z: jnp.array((x, y, z))
 
 
@@ -44,7 +44,9 @@ def intersect_line_sphere(
     q = direction * t + origin
     # Distance q to c
     d_squared = length_squared(center - q)
-    return jnp.where(d_squared < radius**2, t - jnp.sqrt(radius**2 - d_squared), jnp.inf)
+    return jnp.where(
+        d_squared < radius**2, t - jnp.sqrt(radius**2 - d_squared), jnp.inf
+    )
 
 
 class Ray(eqx.Module):
@@ -85,6 +87,9 @@ class Interval(eqx.Module):
         x = jnp.asarray(x)
         return (self.min <= x) & (x <= self.max)
 
+    def clamp(self, x: ScalarLike):
+        return jax.lax.clamp(self.min, x, self.max)
+
 
 class Sphere(eqx.Module):
     center: Vector
@@ -93,14 +98,17 @@ class Sphere(eqx.Module):
     def hit(self, r: Ray, ray_t: Interval) -> HitRecord:
         # Compute closest point Q to sphere
         t = intersect_line_sphere(self.center, self.radius, r.origin, r.direction)
+
         def hit():
             p = r.at(t)
             normal = (p - self.center) / self.radius
             return HitRecord(p, normal, t, True)
+
         def nohit():
             return HitRecord(
                 point(0.0, 0.0, 0.0), vector(0.0, 0.0, 0.0), jnp.inf, False
             )
+
         is_hit = ray_t.contains(t)
         return jax.lax.cond(is_hit, hit, nohit)
 
@@ -114,45 +122,66 @@ class Scene(eqx.Module):
         idx = jnp.argmin(hits.t, axis=0)
         return jtu.tree_map(lambda n: n[idx], hits)
 
+
+def _sample_square(key: KeyArray) -> Vector:
+    return jax.random.uniform(key=key, shape=(2,), minval=-0.5, maxval=0.5)
+
+
 class Camera(eqx.Module):
     center: Point
     image_width: int
     image_height: int
     focal_length: float
+    samples_per_pixel: int
+    sensor_height: float
 
-    
-    def render(self, scene: Scene) -> np.ndarray:        
-        # Camera
-        viewport_height = 2.0
-        viewport_width = viewport_height * (self.image_width / self.image_height)
-
-        # Viewport
-        viewport_u = vector(viewport_width, 0.0, 0.0)
-        viewport_v = vector(0.0, -viewport_height, 0.0)
-        pixel_delta_u = viewport_u / self.image_width
-        pixel_delta_v = viewport_v / self.image_height
-        viewport_upper_left = (
-            self.center - vector(0.0, 0.0, self.focal_length) - viewport_u / 2 - viewport_v / 2
-        )
-        pixel00_loc = viewport_upper_left + 0.5 * (pixel_delta_u + pixel_delta_v)
-
-        def compute_pixel(i: Scalar, j: Scalar) -> Color:
-            pixel_center = pixel00_loc + (i * pixel_delta_u) + (j * pixel_delta_v)
-            ray_direction = pixel_center - self.center
-            r = Ray(self.center, ray_direction)
+    def render(self, scene: Scene, seed: int = 0) -> np.ndarray:
+        def sample_pixel(i: ScalarLike, j: ScalarLike, key: KeyArray) -> Color:
+            r = self._get_ray(i, j, key=key)
             return self._ray_color(r, scene)
 
-        jit = jax.jit(compute_pixel)
+        def compute_pixel(i: ScalarLike, j: ScalarLike, *, key: KeyArray) -> Color:
+            keys = jax.random.split(key, self.samples_per_pixel)
+            colors = jax.vmap(sample_pixel, in_axes=(None, None, 0))(i, j, keys)
+            return jnp.mean(colors, axis=0)
+
+        # Don't use decorator here to avoid beartype warning
+        jit_compute_pixel = jax.jit(compute_pixel)
 
         # TODO: do some vmap here
-        image = np.zeros((self.image_height, self.image_width, 3))
+        key = jax.random.key(seed)
+        image_shape = (self.image_height, self.image_width)
+        image = np.zeros((*image_shape, 3))
+        key = jax.random.split(key, image_shape)
         for j in tqdm(range(self.image_height)):
             for i in range(self.image_width):
-                image[j, i, :] = jit(i, j)
+                image[j, i, :] = jit_compute_pixel(i, j, key=key[j, i])
 
         return image
 
-    def _ray_color(self, r: Ray, scene: Scene) -> Color:    
+    def _get_ray(self, i: ScalarLike, j: ScalarLike, *, key: KeyArray) -> Ray:
+        sensor_width = self.sensor_height * (self.image_width / self.image_height)
+        viewport_u = vector(sensor_width, 0.0, 0.0)
+        viewport_v = vector(0.0, -self.sensor_height, 0.0)
+        pixel_delta_u = viewport_u / self.image_width
+        pixel_delta_v = viewport_v / self.image_height
+        viewport_upper_left = (
+            self.center
+            - vector(0.0, 0.0, self.focal_length)
+            - viewport_u / 2
+            - viewport_v / 2
+        )
+        pixel00_loc = viewport_upper_left + 0.5 * (pixel_delta_u + pixel_delta_v)
+        offset = _sample_square(key)
+        pixel_sample = (
+            pixel00_loc
+            + ((i + offset[0]) * pixel_delta_u)
+            + ((j + offset[1]) * pixel_delta_v)
+        )
+        ray_direction = pixel_sample - self.center
+        return Ray(self.center, ray_direction)
+
+    def _ray_color(self, r: Ray, scene: Scene) -> Color:
         rec = scene.hit(r, Interval(0.0, jnp.inf))
 
         def hit():
@@ -163,7 +192,5 @@ class Camera(eqx.Module):
             a = 0.5 * (unit_direction[1] + 1)
             return (1 - a) * color(1.0, 1.0, 1.0) + a * color(0.5, 0.7, 1.0)
 
-        is_hit = Interval(0., jnp.inf).contains(rec.t)
+        is_hit = Interval(0.0, jnp.inf).contains(rec.t)
         return jax.lax.cond(is_hit, hit, nohit)
-        
-    

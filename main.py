@@ -1,6 +1,7 @@
-from src.raytracer import Camera, Scene, Sphere, point
-from PIL import Image
 import numpy as np
+from PIL import Image
+
+from src.raytracer import Camera, Scene, Sphere, point
 
 
 def main():
@@ -11,16 +12,19 @@ def main():
         ]
     )
     camera = Camera(
-        center=point(0., 0., 0.),
+        center=point(0.0, 0.0, 0.0),
         image_width=400,
         image_height=225,
-        focal_length=1.
+        focal_length=1.0,
+        samples_per_pixel=10,
+        sensor_height=2.0,
     )
     image = camera.render(scene)
 
     image = Image.fromarray(np.uint8(255 * image), mode="RGB")
     image.save("rendering.png")
     image.show()
+
 
 if __name__ == "__main__":
     main()

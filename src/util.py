@@ -1,5 +1,5 @@
-import jax.tree_util as jtu
 import jax.numpy as jnp
+import jax.tree_util as jtu
 
 
 def tree_stack(trees):
@@ -9,5 +9,3 @@ def tree_stack(trees):
 def tree_unstack(tree):
     leaves, treedef = jtu.tree_flatten(tree)
     return [treedef.unflatten(leaf) for leaf in zip(*leaves, strict=True)]
-
-
