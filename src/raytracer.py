@@ -134,9 +134,10 @@ def _sample_square(key: KeyArray) -> Vector:
 
 class MarchingStep(eqx.Module):
     ray: Ray
-    intensity: float
+    intensity: Float
     rec: HitRecord
     key: KeyArray
+    depth: int
 
 
 class Camera(eqx.Module):
@@ -146,6 +147,7 @@ class Camera(eqx.Module):
     focal_length: float
     samples_per_pixel: int
     sensor_height: float
+    max_depth: int
 
     def render(self, scene: Scene, seed: int = 0) -> np.ndarray:
         def sample_pixel(i: ScalarLike, j: ScalarLike, key: KeyArray) -> Color:
@@ -198,22 +200,27 @@ class Camera(eqx.Module):
 
     def _ray_color(self, r: Ray, scene: Scene, key: KeyArray) -> Color:
         def is_hit(step: MarchingStep) -> Bool:
-            return Interval(0.0, jnp.inf).contains(step.rec.t)
+            return (step.depth > 0) & Interval(0.0, jnp.inf).contains(step.rec.t)
 
         def march(step: MarchingStep) -> MarchingStep:
             key, new_key = jax.random.split(step.key)
             direction = random_on_hemisphere(step.rec.normal, key)
             new_ray = Ray(step.rec.p, direction)
             new_hit = scene.hit(new_ray, Interval(0.0, jnp.inf))
-            new_intensity = step.intensity * 0.5
-            return MarchingStep(new_ray, new_intensity, new_hit, new_key)
+            new_depth = step.depth - 1
+            new_intensity = jax.lax.select(new_depth > 0, step.intensity * 0.5, 0.)
+            return MarchingStep(new_ray, new_intensity, new_hit, new_key, new_depth)
 
         # March until no object is hit
         last_step = jax.lax.while_loop(
             is_hit,
             march,
             MarchingStep(
-                ray=r, intensity=1.0, rec=scene.hit(r, Interval(0.0, jnp.inf)), key=key
+                ray=r,
+                intensity=jnp.array(1.0),
+                rec=scene.hit(r, Interval(0.0, jnp.inf)),
+                key=key,
+                depth=self.max_depth
             ),
         )
 

@@ -18,10 +18,10 @@ def main():
         focal_length=1.0,
         samples_per_pixel=100,
         sensor_height=2.0,
+        max_depth=50,
     )
     image = camera.render(scene)
 
-    print(np.max(image), np.min(image))
     image = Image.fromarray(np.uint8(255 * image), mode="RGB")
     image.save("rendering.png")
     image.show()
