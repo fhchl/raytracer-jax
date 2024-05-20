@@ -17,6 +17,11 @@ def unit_vector(v: Array) -> Array:
     return v / length(v)
 
 
+def random_on_hemisphere(normal: Vector, key: KeyArray) -> Vector:
+    on_unit_sphere = jax.random.ball(key, 3)
+    return on_unit_sphere * jnp.sign(on_unit_sphere.dot(normal))
+
+
 def length_squared(v: Array) -> Float:
     return v.dot(v)
 
@@ -137,8 +142,9 @@ class Camera(eqx.Module):
 
     def render(self, scene: Scene, seed: int = 0) -> np.ndarray:
         def sample_pixel(i: ScalarLike, j: ScalarLike, key: KeyArray) -> Color:
-            r = self._get_ray(i, j, key=key)
-            return self._ray_color(r, scene)
+            keyr, keyc = jax.random.split(key)
+            r = self._get_ray(i, j, keyr)
+            return self._ray_color(r, scene, keyc)
 
         def compute_pixel(i: ScalarLike, j: ScalarLike, *, key: KeyArray) -> Color:
             keys = jax.random.split(key, self.samples_per_pixel)
@@ -159,7 +165,7 @@ class Camera(eqx.Module):
 
         return image
 
-    def _get_ray(self, i: ScalarLike, j: ScalarLike, *, key: KeyArray) -> Ray:
+    def _get_ray(self, i: ScalarLike, j: ScalarLike, key: KeyArray) -> Ray:
         sensor_width = self.sensor_height * (self.image_width / self.image_height)
         viewport_u = vector(sensor_width, 0.0, 0.0)
         viewport_v = vector(0.0, -self.sensor_height, 0.0)
@@ -181,11 +187,14 @@ class Camera(eqx.Module):
         ray_direction = pixel_sample - self.center
         return Ray(self.center, ray_direction)
 
-    def _ray_color(self, r: Ray, scene: Scene) -> Color:
+    USE A WHULE LOOP HERE!
+    def _ray_color(self, r: Ray, scene: Scene, key: KeyArray) -> Color:
         rec = scene.hit(r, Interval(0.0, jnp.inf))
 
         def hit():
-            return 0.5 * (rec.normal + 1)
+            key1, key2 = jax.random.split(key)
+            direction = random_on_hemisphere(rec.normal, key1)
+            return 0.5 * self._ray_color(Ray(rec.p, direction), scene, key2)
 
         def nohit():
             unit_direction = unit_vector(r.direction)
