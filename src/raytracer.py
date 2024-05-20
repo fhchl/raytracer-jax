@@ -206,7 +206,7 @@ class Camera(eqx.Module):
             key, new_key = jax.random.split(step.key)
             direction = random_on_hemisphere(step.rec.normal, key)
             new_ray = Ray(step.rec.p, direction)
-            new_hit = scene.hit(new_ray, Interval(0.0, jnp.inf))
+            new_hit = scene.hit(new_ray, Interval(0.001, jnp.inf))
             new_depth = step.depth - 1
             new_intensity = jax.lax.select(new_depth > 0, step.intensity * 0.5, 0.)
             return MarchingStep(new_ray, new_intensity, new_hit, new_key, new_depth)
