@@ -132,6 +132,13 @@ def _sample_square(key: KeyArray) -> Vector:
     return jax.random.uniform(key=key, shape=(2,), minval=-0.5, maxval=0.5)
 
 
+class MarchingStep(eqx.Module):
+    ray: Ray
+    intensity: float
+    rec: HitRecord
+    key: KeyArray
+
+
 class Camera(eqx.Module):
     center: Point
     image_width: int
@@ -142,9 +149,9 @@ class Camera(eqx.Module):
 
     def render(self, scene: Scene, seed: int = 0) -> np.ndarray:
         def sample_pixel(i: ScalarLike, j: ScalarLike, key: KeyArray) -> Color:
-            keyr, keyc = jax.random.split(key)
-            r = self._get_ray(i, j, keyr)
-            return self._ray_color(r, scene, keyc)
+            key, subkey = jax.random.split(key)
+            r = self._get_ray(i, j, key)
+            return self._ray_color(r, scene, subkey)
 
         def compute_pixel(i: ScalarLike, j: ScalarLike, *, key: KeyArray) -> Color:
             keys = jax.random.split(key, self.samples_per_pixel)
@@ -158,10 +165,12 @@ class Camera(eqx.Module):
         key = jax.random.key(seed)
         image_shape = (self.image_height, self.image_width)
         image = np.zeros((*image_shape, 3))
-        key = jax.random.split(key, image_shape)
+        keys = jax.random.split(key, image_shape)
         for j in tqdm(range(self.image_height)):
             for i in range(self.image_width):
-                image[j, i, :] = jit_compute_pixel(i, j, key=key[j, i])
+                image[j, i, :] = jit_compute_pixel(i, j, key=keys[j, i])
+
+        image = np.clip(image, 0.0, 0.999)
 
         return image
 
@@ -187,19 +196,30 @@ class Camera(eqx.Module):
         ray_direction = pixel_sample - self.center
         return Ray(self.center, ray_direction)
 
-    USE A WHULE LOOP HERE!
     def _ray_color(self, r: Ray, scene: Scene, key: KeyArray) -> Color:
-        rec = scene.hit(r, Interval(0.0, jnp.inf))
+        def is_hit(step: MarchingStep) -> Bool:
+            return Interval(0.0, jnp.inf).contains(step.rec.t)
 
-        def hit():
-            key1, key2 = jax.random.split(key)
-            direction = random_on_hemisphere(rec.normal, key1)
-            return 0.5 * self._ray_color(Ray(rec.p, direction), scene, key2)
+        def march(step: MarchingStep) -> MarchingStep:
+            key, new_key = jax.random.split(step.key)
+            direction = random_on_hemisphere(step.rec.normal, key)
+            new_ray = Ray(step.rec.p, direction)
+            new_hit = scene.hit(new_ray, Interval(0.0, jnp.inf))
+            new_intensity = step.intensity * 0.5
+            return MarchingStep(new_ray, new_intensity, new_hit, new_key)
 
-        def nohit():
-            unit_direction = unit_vector(r.direction)
-            a = 0.5 * (unit_direction[1] + 1)
-            return (1 - a) * color(1.0, 1.0, 1.0) + a * color(0.5, 0.7, 1.0)
+        # March until no object is hit
+        last_step = jax.lax.while_loop(
+            is_hit,
+            march,
+            MarchingStep(
+                ray=r, intensity=1.0, rec=scene.hit(r, Interval(0.0, jnp.inf)), key=key
+            ),
+        )
 
-        is_hit = Interval(0.0, jnp.inf).contains(rec.t)
-        return jax.lax.cond(is_hit, hit, nohit)
+        # Hit the sky
+        unit_direction = unit_vector(last_step.ray.direction)
+        a = 0.5 * (unit_direction[1] + 1)
+        return last_step.intensity * (
+            (1 - a) * color(1.0, 1.0, 1.0) + a * color(0.5, 0.7, 1.0)
+        )
