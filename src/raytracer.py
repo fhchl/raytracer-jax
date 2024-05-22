@@ -54,6 +54,10 @@ def intersect_line_sphere(
     )
 
 
+def linear_to_gamma(c: ArrayLike) -> np.ndarray:
+    return np.where(c > 0, np.sqrt(c), 0)
+
+
 class Ray(eqx.Module):
     origin: Point
     direction: Vector
@@ -172,8 +176,8 @@ class Camera(eqx.Module):
             for i in range(self.image_width):
                 image[j, i, :] = jit_compute_pixel(i, j, key=keys[j, i])
 
-        image = np.clip(image, 0.0, 0.999)
-
+        image = np.clip(linear_to_gamma(image), 0.0, 0.999)
+        
         return image
 
     def _get_ray(self, i: ScalarLike, j: ScalarLike, key: KeyArray) -> Ray:
