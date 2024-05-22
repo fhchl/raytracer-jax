@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 import numpy as np
 from jax import Array
-from jaxtyping import ScalarLike
+from jaxtyping import ArrayLike, ScalarLike
 from tqdm import tqdm
 
 from .util import tree_stack
@@ -50,12 +52,16 @@ def intersect_line_sphere(
     # Distance q to c
     d_squared = length_squared(center - q)
     return jnp.where(
-        d_squared < radius**2, t - jnp.sqrt(radius**2 - d_squared), jnp.inf
+        d_squared < radius ** 2, t - jnp.sqrt(radius ** 2 - d_squared), jnp.inf
     )
 
 
 def linear_to_gamma(c: ArrayLike) -> np.ndarray:
     return np.where(c > 0, np.sqrt(c), 0)
+
+
+def reflect(v: Vector, n: Vector) -> Vector:
+    return v - 2 * v.dot(n) * n
 
 
 class Ray(eqx.Module):
@@ -69,11 +75,26 @@ class Ray(eqx.Module):
         return self.origin + t * self.direction
 
 
+class Material(eqx.Module):
+    albedo: Color
+    reflectance: Float = 0.0
+    fuzziness: Float = 0.0
+
+    def scatter(self, r_in: Ray, rec: HitRecord, key: KeyArray) -> tuple[Color, Ray]:
+        key1, key2 = jax.random.split(key)
+        lambertian = rec.normal + jax.random.ball(key1, 3)
+        reflected = reflect(r_in.direction, rec.normal)
+        metal = unit_vector(reflected) + self.fuzziness * jax.random.ball(key2, 3)
+        direction = (1 - self.reflectance) * lambertian + self.reflectance * metal
+        return self.albedo, Ray(rec.p, direction)
+
+
 class HitRecord(eqx.Module):
     p: Point
     normal: Vector
     t: Float
     front_face: Bool
+    mat: Material
 
     def set_face_normal(self, r: Ray, outward_normal: Vector) -> "HitRecord":
         front_face = jnp.where(r.direction.dot(outward_normal) > 0, True, False)
@@ -102,7 +123,8 @@ class Interval(eqx.Module):
 
 class Sphere(eqx.Module):
     center: Vector
-    radius: float
+    radius: Float
+    mat: Material
 
     def hit(self, r: Ray, ray_t: Interval) -> HitRecord:
         # Compute closest point Q to sphere
@@ -111,12 +133,11 @@ class Sphere(eqx.Module):
         def hit():
             p = r.at(t)
             normal = (p - self.center) / self.radius
-            return HitRecord(p, normal, t, True)
+            return HitRecord(p, normal, t, jnp.array(True), self.mat)
 
         def nohit():
-            return HitRecord(
-                point(0.0, 0.0, 0.0), vector(0.0, 0.0, 0.0), jnp.inf, False
-            )
+            null = point(0.0, 0.0, 0.0)
+            return HitRecord(null, null, jnp.array(jnp.inf), jnp.array(False), self.mat)
 
         is_hit = ray_t.contains(t)
         return jax.lax.cond(is_hit, hit, nohit)
@@ -138,10 +159,10 @@ def _sample_square(key: KeyArray) -> Vector:
 
 class MarchingStep(eqx.Module):
     ray: Ray
-    intensity: Float
+    attenuation: Color
     rec: HitRecord
-    key: KeyArray
     depth: int
+    key: KeyArray
 
 
 class Camera(eqx.Module):
@@ -177,7 +198,7 @@ class Camera(eqx.Module):
                 image[j, i, :] = jit_compute_pixel(i, j, key=keys[j, i])
 
         image = np.clip(linear_to_gamma(image), 0.0, 0.999)
-        
+
         return image
 
     def _get_ray(self, i: ScalarLike, j: ScalarLike, key: KeyArray) -> Ray:
@@ -209,29 +230,27 @@ class Camera(eqx.Module):
         def march(step: MarchingStep) -> MarchingStep:
             key, new_key = jax.random.split(step.key)
             # random_on_hemisphere(step.rec.normal, key)
-            direction = step.rec.normal + jax.random.ball(key, 3)
-            new_ray = Ray(step.rec.p, direction)
+            attenuation, new_ray = step.rec.mat.scatter(step.ray, step.rec, key)
             new_hit = scene.hit(new_ray, Interval(0.001, jnp.inf))
             new_depth = step.depth - 1
-            new_intensity = jax.lax.select(new_depth > 0, step.intensity * 0.5, 0.)
-            return MarchingStep(new_ray, new_intensity, new_hit, new_key, new_depth)
+            new_attenuation = jax.lax.select(
+                new_depth > 0, attenuation * step.attenuation, color(0.0, 0.0, 0.0)
+            )
+            return MarchingStep(new_ray, new_attenuation, new_hit, new_depth, new_key)
 
         # March until no object is hit
-        last_step = jax.lax.while_loop(
-            is_hit,
-            march,
-            MarchingStep(
-                ray=r,
-                intensity=jnp.array(1.0),
-                rec=scene.hit(r, Interval(0.0, jnp.inf)),
-                key=key,
-                depth=self.max_depth
-            ),
+        initial_step = MarchingStep(
+            ray=r,
+            attenuation=color(1.0, 1.0, 1.0),
+            rec=scene.hit(r, Interval(0.0, jnp.inf)),
+            depth=self.max_depth,
+            key=key,
         )
+        last_step = jax.lax.while_loop(is_hit, march, initial_step)
 
-        # Hit the sky
+        # Finally hit the sky
         unit_direction = unit_vector(last_step.ray.direction)
         a = 0.5 * (unit_direction[1] + 1)
-        return last_step.intensity * (
+        return last_step.attenuation * (
             (1 - a) * color(1.0, 1.0, 1.0) + a * color(0.5, 0.7, 1.0)
         )

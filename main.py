@@ -1,14 +1,24 @@
 import numpy as np
 from PIL import Image
 
-from src.raytracer import Camera, Scene, Sphere, point
+from src.raytracer import Camera, Material, Scene, Sphere, color, point
 
 
 def main():
+    blue_mat = Material(
+        albedo=color(0.1, 0.2, 0.5),
+    )
+    yellow_mat = Material(
+        albedo=color(0.8, 0.8, 0),
+    )
+    metal_mat = Material(color(0.8, 0.8, 0.8), reflectance=1.0)
+    fuzzy_mat = Material(color(0.8, 0.6, 0.2), reflectance=1.0, fuzziness=0.5)
     scene = Scene(
         objects=[
-            Sphere(point(0.0, -100.5, -1), 100.0),
-            Sphere(point(0, 0.0, -1.0), 0.5),
+            Sphere(point(0.0, -100.5, -1), 100.0, yellow_mat),
+            Sphere(point(0, 0.0, -1.2), 0.5, blue_mat),
+            Sphere(point(-1.0, 0.0, -1.0), 0.5, metal_mat),
+            Sphere(point(1.0, 0.0, -1.0), 0.5, fuzzy_mat),
         ]
     )
     camera = Camera(
