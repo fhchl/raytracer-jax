@@ -180,22 +180,21 @@ class Camera(eqx.Module):
             r = self._get_ray(i, j, key)
             return self._ray_color(r, scene, subkey)
 
-        def compute_pixel(i: ScalarLike, j: ScalarLike, *, key: KeyArray) -> Color:
+        def compute_pixel(i: ScalarLike, j: ScalarLike, key: KeyArray) -> Color:
             keys = jax.random.split(key, self.samples_per_pixel)
             colors = jax.vmap(sample_pixel, in_axes=(None, None, 0))(i, j, keys)
             return jnp.mean(colors, axis=0)
 
         # Don't use decorator here to avoid beartype warning
-        jit_compute_pixel = jax.jit(compute_pixel)
+        jit_compute_pixel = jax.jit(jax.vmap(compute_pixel, in_axes=(0, None, 0)))
 
-        # TODO: do some vmap here
         key = jax.random.key(seed)
         image_shape = (self.image_height, self.image_width)
         image = np.zeros((*image_shape, 3))
         keys = jax.random.split(key, image_shape)
+        i = np.arange(self.image_width)
         for j in tqdm(range(self.image_height)):
-            for i in range(self.image_width):
-                image[j, i, :] = jit_compute_pixel(i, j, key=keys[j, i])
+            image[j, i, :] = jit_compute_pixel(i, j, keys[j])
 
         image = np.clip(linear_to_gamma(image), 0.0, 0.999)
 
