@@ -64,6 +64,12 @@ def reflect(v: Vector, n: Vector) -> Vector:
     return v - 2 * v.dot(n) * n
 
 
+def refract(uv: Vector, n: Vector, etai_over_etat: Float):
+    r_out_perp = etai_over_etat * (uv - uv.dot(n) * n)
+    r_out_para = - jnp.sqrt(1.0 - length_squared(r_out_perp)) * n
+    return r_out_perp + r_out_para
+
+
 class Ray(eqx.Module):
     origin: Point
     direction: Vector
@@ -79,13 +85,33 @@ class Material(eqx.Module):
     albedo: Color
     reflectance: Float = 0.0
     fuzziness: Float = 0.0
+    refraction_index: Float = 1.0
+    transparency: Float = 0.0
+    refraction_index: Float = 1.0
 
     def scatter(self, r_in: Ray, rec: HitRecord, key: KeyArray) -> tuple[Color, Ray]:
-        key1, key2 = jax.random.split(key)
-        lambertian = rec.normal + jax.random.ball(key1, 3)
-        reflected = reflect(r_in.direction, rec.normal)
-        metal = unit_vector(reflected) + self.fuzziness * jax.random.ball(key2, 3)
-        direction = (1 - self.reflectance) * lambertian + self.reflectance * metal
+        key1, key2, key3 = jax.random.split(key, 3)
+        
+        def reflection():
+            lambertian = rec.normal + jax.random.ball(key1, 3)
+            reflected = reflect(r_in.direction, rec.normal)
+            metal = unit_vector(reflected) + self.fuzziness * jax.random.ball(key2, 3)
+            direction = (1 - self.reflectance) * lambertian + self.reflectance * metal
+            return direction
+
+        def transmission():
+            ri = jax.lax.select(
+                rec.front_face,
+                1./self.refraction_index,
+                self.refraction_index,
+            )
+            unit_direction = unit_vector(r_in.direction)
+            direction = refract(unit_direction, rec.normal, ri)
+            return direction
+
+        is_reflected = jax.random.uniform(key3) > self.transparency
+        direction = jax.lax.cond(is_reflected, reflection, transmission)
+        
         return self.albedo, Ray(rec.p, direction)
 
 
@@ -96,10 +122,11 @@ class HitRecord(eqx.Module):
     front_face: Bool
     mat: Material
 
-    def set_face_normal(self, r: Ray, outward_normal: Vector) -> "HitRecord":
-        front_face = jnp.where(r.direction.dot(outward_normal) > 0, True, False)
-        normal = jnp.where(front_face, outward_normal, -outward_normal)
-        return HitRecord(self.p, normal, self.t, front_face)
+
+def compute_normal_and_face(r: Ray, outward_normal: Vector) -> tuple[Vector, Bool]:
+    front_face = r.direction.dot(outward_normal) < 0
+    normal = jnp.where(front_face, outward_normal, -outward_normal)
+    return normal, front_face
 
 
 class Interval(eqx.Module):
@@ -132,8 +159,9 @@ class Sphere(eqx.Module):
 
         def hit():
             p = r.at(t)
-            normal = (p - self.center) / self.radius
-            return HitRecord(p, normal, t, jnp.array(True), self.mat)
+            outward_normal = (p - self.center) / self.radius
+            normal, front_face = compute_normal_and_face(r, outward_normal)
+            return HitRecord(p, normal, t, front_face, self.mat)
 
         def nohit():
             null = point(0.0, 0.0, 0.0)
@@ -196,6 +224,8 @@ class Camera(eqx.Module):
         for j in tqdm(range(self.image_height)):
             image[j, i, :] = jit_compute_pixel(i, j, keys[j])
 
+        # FIXME: without linear_to_gamma, sky looks good but yellow not. Is something
+        #        off with how we save colors?
         image = np.clip(linear_to_gamma(image), 0.0, 0.999)
 
         return image
