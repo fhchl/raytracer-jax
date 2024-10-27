@@ -5,17 +5,25 @@ import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 import numpy as np
-from jax import Array
-from jaxtyping import ArrayLike, ScalarLike
+import jaxtyping as jt
+from jaxtyping import ScalarLike
 from tqdm import tqdm
+from typing import TypeAlias
 
 from .util import tree_stack
 
-Bool = Float = Color = Point = Vector = KeyArray = Array
+Int: TypeAlias = jt.Int[jt.Array, ""]
+Bool: TypeAlias = jt.Bool[jt.Array, ""]
+Float: TypeAlias = jt.Float[jt.Array, ""]
+Color: TypeAlias = jt.Float[jt.Array, "3"]
+Point: TypeAlias = jt.Float[jt.Array, "3"]
+Vector: TypeAlias = jt.Float[jt.Array, "3"]
+KeyArray: TypeAlias = jt.Key[jt.Array, "..."]
+
 color = point = vector = lambda x, y, z: jnp.array((x, y, z))
 
 
-def unit_vector(v: Array) -> Array:
+def unit_vector(v: Vector) -> Vector:
     return v / length(v)
 
 
@@ -24,11 +32,11 @@ def random_on_hemisphere(normal: Vector, key: KeyArray) -> Vector:
     return on_unit_sphere * jnp.sign(on_unit_sphere.dot(normal))
 
 
-def length_squared(v: Array) -> Float:
+def length_squared(v: Vector) -> Float:
     return v.dot(v)
 
 
-def length(v: Array) -> Float:
+def length(v: Vector) -> Float:
     return jnp.sqrt(length_squared(v))
 
 
@@ -52,11 +60,11 @@ def intersect_line_sphere(
     # Distance q to c
     d_squared = length_squared(center - q)
     return jnp.where(
-        d_squared < radius ** 2, t - jnp.sqrt(radius ** 2 - d_squared), jnp.inf
+        d_squared < radius**2, t - jnp.sqrt(radius**2 - d_squared), jnp.inf
     )
 
 
-def linear_to_gamma(c: ArrayLike) -> np.ndarray:
+def linear_to_gamma(c: np.ndarray) -> np.ndarray:
     return np.where(c > 0, np.sqrt(c), 0)
 
 
@@ -66,7 +74,7 @@ def reflect(v: Vector, n: Vector) -> Vector:
 
 def refract(uv: Vector, n: Vector, etai_over_etat: Float):
     r_out_perp = etai_over_etat * (uv - uv.dot(n) * n)
-    r_out_para = - jnp.sqrt(1.0 - length_squared(r_out_perp)) * n
+    r_out_para = -jnp.sqrt(1.0 - length_squared(r_out_perp)) * n
     return r_out_perp + r_out_para
 
 
@@ -83,15 +91,14 @@ class Ray(eqx.Module):
 
 class Material(eqx.Module):
     albedo: Color
-    reflectance: Float = 0.0
-    fuzziness: Float = 0.0
-    refraction_index: Float = 1.0
-    transparency: Float = 0.0
-    refraction_index: Float = 1.0
+    reflectance: float = 0.0
+    fuzziness: float = 0.0
+    refraction_index: float = 1.0
+    transparency: float = 0.0
 
     def scatter(self, r_in: Ray, rec: HitRecord, key: KeyArray) -> tuple[Color, Ray]:
         key1, key2, key3 = jax.random.split(key, 3)
-        
+
         def reflection():
             lambertian = rec.normal + jax.random.ball(key1, 3)
             reflected = reflect(r_in.direction, rec.normal)
@@ -102,7 +109,7 @@ class Material(eqx.Module):
         def transmission():
             ri = jax.lax.select(
                 rec.front_face,
-                1./self.refraction_index,
+                1.0 / self.refraction_index,
                 self.refraction_index,
             )
             unit_direction = unit_vector(r_in.direction)
@@ -111,7 +118,7 @@ class Material(eqx.Module):
 
         is_reflected = jax.random.uniform(key3) > self.transparency
         direction = jax.lax.cond(is_reflected, reflection, transmission)
-        
+
         return self.albedo, Ray(rec.p, direction)
 
 
@@ -181,7 +188,7 @@ class Scene(eqx.Module):
         return jtu.tree_map(lambda n: n[idx], hits)
 
 
-def _sample_square(key: KeyArray) -> Vector:
+def _sample_square(key: KeyArray) -> jt.Float[jt.Array, "2"]:
     return jax.random.uniform(key=key, shape=(2,), minval=-0.5, maxval=0.5)
 
 
@@ -208,7 +215,7 @@ class Camera(eqx.Module):
             r = self._get_ray(i, j, key)
             return self._ray_color(r, scene, subkey)
 
-        def compute_pixel(i: ScalarLike, j: ScalarLike, key: KeyArray) -> Color:
+        def compute_pixel(i: Int, j: Int, key: KeyArray) -> Color:
             keys = jax.random.split(key, self.samples_per_pixel)
             colors = jax.vmap(sample_pixel, in_axes=(None, None, 0))(i, j, keys)
             return jnp.mean(colors, axis=0)
@@ -258,7 +265,6 @@ class Camera(eqx.Module):
 
         def march(step: MarchingStep) -> MarchingStep:
             key, new_key = jax.random.split(step.key)
-            # random_on_hemisphere(step.rec.normal, key)
             attenuation, new_ray = step.rec.mat.scatter(step.ray, step.rec, key)
             new_hit = scene.hit(new_ray, Interval(0.001, jnp.inf))
             new_depth = step.depth - 1
